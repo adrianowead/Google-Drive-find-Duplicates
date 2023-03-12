@@ -8,11 +8,49 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import collections
 
 # If modifying these scopes, delete the file token.json.
-SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly']
+SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly','https://www.googleapis.com/auth/drive']
 
+def get_path_from_id(file_id):
+    # Authenticate and build the Drive API client
+    creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    service = build('drive', 'v3', credentials=creds)
+
+    # Get the file's metadata
+    try:
+        file = service.files().get(fileId=file_id, fields='parents,name').execute()
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+        return None
+
+    # Recursively build the path from the file's parents
+    path = [file['name']]
+    while 'parents' in file:
+        parent_id = file['parents'][0]
+        try:
+            parent = service.files().get(fileId=parent_id, fields='parents,name').execute()
+        except HttpError as error:
+            print(f'An error occurred: {error}')
+            return None
+        path.insert(0, parent['name'])
+        file = parent
+
+    # Return the path as a string
+    return '/'.join(path)
 
 def main():
     """Shows basic usage of the Drive v3 API.
@@ -35,13 +73,12 @@ def main():
         # Save the credentials for the next run
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
-    
+
     service = build('drive', 'v3', credentials=creds)
 
     counter = 0
     page_token = None
-    list_of_tuples = []
-    dups_dict = collections.defaultdict(list) 
+    dups_dict = {}
 
     try:
         while True:
@@ -49,7 +86,7 @@ def main():
 
             response = service.files().list(
                 spaces='drive',
-                pageSize=500,
+                pageSize=10,
                 fields='nextPageToken, files(id, name, md5Checksum, parents)',
                 pageToken=page_token
             ).execute()
@@ -57,32 +94,37 @@ def main():
             for f in response.get('files', []):
                 # Process change
 
-                list_of_tuples.append((f.get('md5Checksum'), f.get('name')))
-                #dups_dict[f.get('md5Checksum')] += 1
-                
-                # print ('Found file: %s (%s) %s' % (f.get('name'), f.get('id'), f.get('md5Checksum')))
+                if f.get('md5Checksum') is not None:
+                    if f.get('md5Checksum') in dups_dict:
+                        dups_dict[f.get('md5Checksum')]['files'].append(f)
+                    else:
+                        dups_dict[f.get('md5Checksum')] = {'files': [f]}
+
             page_token = response.get('nextPageToken', None)
-            
-            
+
             #remove this IF if you want to scan through everything
             if counter >= 10:
                 break
-            
+
             if page_token is None:
                 print("this many:" + str(counter))
                 break
 
+        out = {}
+        for i in dups_dict:
+            if len(dups_dict[i]['files']) > 1:
+                out[i] = dups_dict[i]
+
+        del dups_dict
+
         with open("duplicated.txt","w",encoding='utf-8') as f:
-            for k,v in list_of_tuples:
-                dups_dict[k].append(v)
-                f.write(f"{v}\n")
+            for i in out:
+                for k in out[i]['files']:
+                    name = k['name']
+                    path = get_path_from_id(k['id'])
 
-        print("\r\n\r\n")
-        print("here are the duplicates")
+                    f.write(f"{name} -> {path}\n")
 
-        for key in dups_dict:
-            if len(dups_dict[key]) > 1 and "-checkpoint" not in str(dups_dict[key]):
-                print(dups_dict[key])
     except HttpError as error:
         # TODO(developer) - Handle errors from drive API.
         print(f'An error occurred: {error}')
