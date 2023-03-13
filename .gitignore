@@ -1,4 +1,5 @@
 token.json
 credentials.json
-duplicated.txt
-duplicated.csv
+*.csv
+*.ods
+*#
