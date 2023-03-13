@@ -87,7 +87,7 @@ def main():
             response = service.files().list(
                 spaces='drive',
                 pageSize=10,
-                fields='nextPageToken, files(id, name, md5Checksum, parents)',
+                fields='nextPageToken, files(id, name, md5Checksum, parents, size)',
                 pageToken=page_token
             ).execute()
             
@@ -117,13 +117,17 @@ def main():
 
         del dups_dict
 
-        with open("duplicated.txt","w",encoding='utf-8') as f:
+        with open("duplicated.csv","w",encoding='utf-8') as f:
+            f.write(f"md5;size;name;path\n")
+
             for i in out:
                 for k in out[i]['files']:
+                    md5 = k ['md5Checksum']
                     name = k['name']
+                    size = k['size']
                     path = get_path_from_id(k['id'])
 
-                    f.write(f"{name} -> {path}\n")
+                    f.write(f"{md5};{size};{name};{path}\n")
 
     except HttpError as error:
         # TODO(developer) - Handle errors from drive API.
