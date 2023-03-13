@@ -1,138 +1,97 @@
-from __future__ import print_function
-
-import os.path
+import os
+import csv
 import sys
-
-from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
+def get_all_files(service, folder_id, files, limit: int = 0, path='') -> None:
+    """Recursively get all files in a folder and its subfolders."""
+    query = f"'{folder_id}' in parents and trashed = false"
+    results = service.files().list(q=query, fields="nextPageToken, files(id, md5Checksum, name, size, parents, mimeType)").execute()
+    items = results.get('files', [])
+    for item in items:
+        # Skip folders
+        if item.get('mimeType') in ['application/vnd.google-apps.folder']:
+            get_all_files(
+                service=service,
+                folder_id=item['id'],
+                files=files,
+                limit=limit,
+                path=path + '/' + item['name']
+            )
+        # skip shortcuts
+        elif item.get('mimeType') not in ['application/vnd.google-apps.shortcut']:
+            item['path'] = path + '/' + item['name']
+            files.append(item)
+
+        if limit > 0 and len(files) >= limit:
+            break
+
+def save_duplicates_to_csv(duplicates: list, csv_file_name: str) -> None:
+    """Save a list of duplicate files to a CSV file."""
+    with open(csv_file_name, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file, delimiter=';')
+        writer.writerow(['Checksum', 'Nome', 'Tamanho (bytes)', 'Caminho Completo', 'ID'])
+        for d in duplicates:
+            writer.writerow([d['md5Checksum'], d['name'], d['size'], d['path'], d['id']])
+
+def check_for_duplicates(files: list) -> list:
+    """Find all duplicate files in a list of files."""
+    duplicates = []
+    seen_checksums = {}
+    for f in files:
+        if 'md5Checksum' in f:
+            if f['md5Checksum'] not in seen_checksums:
+                seen_checksums[f['md5Checksum']] = f
+            else:
+                # Check if files have the same path
+                if seen_checksums[f['md5Checksum']]['path'] == f['path']:
+                    continue
+                # Check if files have the same size
+                if seen_checksums[f['md5Checksum']]['size'] != f['size']:
+                    continue
+                duplicates.append(f)
+    return duplicates
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly','https://www.googleapis.com/auth/drive']
 
-def get_path_from_id(file_id):
-    # Authenticate and build the Drive API client
-    creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+# Authenticate and build the Drive API client
+creds = Credentials.from_authorized_user_file('token.json', SCOPES)
 
-    # If there are no (valid) credentials available, let the user log in.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+# If there are no (valid) credentials available, let the user log in.
+if not creds or not creds.valid:
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    else:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            'credentials.json', SCOPES)
+        creds = flow.run_local_server(port=0)
+    # Save the credentials for the next run
+    with open('token.json', 'w', encoding='utf-8') as token:
+        token.write(creds.to_json())
 
-    service = build('drive', 'v3', credentials=creds)
+service = build('drive', 'v3', credentials=creds)
 
-    # Get the file's metadata
-    try:
-        file = service.files().get(fileId=file_id, fields='parents,name').execute()
-    except HttpError as error:
-        print(f'An error occurred: {error}')
-        return None
+# Get all files in the root folder
+files = []
+get_all_files(
+    service=service, 
+    folder_id='root',
+    files=files,
+    limit=0,
+    path=''
+)
 
-    # Recursively build the path from the file's parents
-    path = [file['name']]
-    while 'parents' in file:
-        parent_id = file['parents'][0]
-        try:
-            parent = service.files().get(fileId=parent_id, fields='parents,name').execute()
-        except HttpError as error:
-            print(f'An error occurred: {error}')
-            return None
-        path.insert(0, parent['name'])
-        file = parent
+print(f'count {len(files)} arquivos\n')
 
-    # Return the path as a string
-    return '/'.join(path)
+# Compare files by checksum and group duplicates
+duplicates = check_for_duplicates(files)
 
-def main():
-    """Shows basic usage of the Drive v3 API.
-    Prints the names and ids of the first 10 files the user has access to.
-    """
-    creds = None
-    # The file token.json stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first
-    # time.
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+print(f'count {len(duplicates)} duplicados\n')
 
-    service = build('drive', 'v3', credentials=creds)
-
-    counter = 0
-    page_token = None
-    dups_dict = {}
-
-    try:
-        while True:
-            counter = counter + 1
-
-            response = service.files().list(
-                spaces='drive',
-                pageSize=10,
-                fields='nextPageToken, files(id, name, md5Checksum, parents, size)',
-                pageToken=page_token
-            ).execute()
-            
-            for f in response.get('files', []):
-                # Process change
-
-                if f.get('md5Checksum') is not None:
-                    if f.get('md5Checksum') in dups_dict:
-                        dups_dict[f.get('md5Checksum')]['files'].append(f)
-                    else:
-                        dups_dict[f.get('md5Checksum')] = {'files': [f]}
-
-            page_token = response.get('nextPageToken', None)
-
-            #remove this IF if you want to scan through everything
-            if counter >= 10:
-                break
-
-            if page_token is None:
-                print("this many:" + str(counter))
-                break
-
-        out = {}
-        for i in dups_dict:
-            if len(dups_dict[i]['files']) > 1:
-                out[i] = dups_dict[i]
-
-        del dups_dict
-
-        with open("duplicated.csv","w",encoding='utf-8') as f:
-            f.write(f"md5;size;name;path\n")
-
-            for i in out:
-                for k in out[i]['files']:
-                    md5 = k ['md5Checksum']
-                    name = k['name']
-                    size = k['size']
-                    path = get_path_from_id(k['id'])
-
-                    f.write(f"{md5};{size};{name};{path}\n")
-
-    except HttpError as error:
-        # TODO(developer) - Handle errors from drive API.
-        print(f'An error occurred: {error}')
-
-
-if __name__ == '__main__':
-    main()
+# Save list of duplicate files to CSV
+save_duplicates_to_csv(duplicates,'duplicated.csv')
