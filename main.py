@@ -36,7 +36,16 @@ def save_duplicates_to_csv(duplicates: list, csv_file_name: str) -> None:
         writer = csv.writer(file, delimiter=';')
         writer.writerow(['Checksum', 'Nome', 'Tamanho (bytes)', 'Caminho Completo', 'ID'])
         for d in duplicates:
-            writer.writerow([d['md5Checksum'], d['name'], d['size'], d['path'], d['id']])
+            writer.writerow(
+                [
+                    d['copy_1']['md5Checksum'], d['copy_1']['name'], d['copy_1']['size'], d['copy_1']['path'], d['copy_1']['id']
+                ]
+            )
+            writer.writerow(
+                [
+                    d['copy_2']['md5Checksum'], d['copy_2']['name'], d['copy_2']['size'], d['copy_2']['path'], d['copy_2']['id']
+                ]
+            )
 
 def check_for_duplicates(files: list) -> list:
     """Find all duplicate files in a list of files."""
@@ -53,7 +62,10 @@ def check_for_duplicates(files: list) -> list:
                 # Check if files have the same size
                 if seen_checksums[f['md5Checksum']]['size'] != f['size']:
                     continue
-                duplicates.append(f)
+                duplicates.append({
+                    'copy_1': f,
+                    'copy_2': seen_checksums[f['md5Checksum']],
+                })
     return duplicates
 
 # If modifying these scopes, delete the file token.json.
